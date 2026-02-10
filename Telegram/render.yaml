@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: telegram-ai-bot
-    env: python
-    buildCommand: ""
-    startCommand: python bot.py
