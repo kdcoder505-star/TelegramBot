@@ -1,7 +1,6 @@
 import os
-import threading
 import requests
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -12,26 +11,12 @@ from telegram.ext import (
     filters,
 )
 
-# ================= ENV =================
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN not set")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not set")
+if not TOKEN or not GROQ_API_KEY:
+    raise ValueError("Missing environment variables")
 
-# ================= FLASK =================
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot is running!"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-# ================= BOT =================
 ROLES = {
     "professional": "You are a professional AI assistant.",
     "comedy": "You are a funny AI assistant.",
@@ -41,6 +26,10 @@ ROLES = {
 BLOCKED_WORDS = ["sex", "porn", "xxx", "adult", "nude", "fuck"]
 user_roles = {}
 
+flask_app = Flask(__name__)
+telegram_app = Application.builder().token(TOKEN).build()
+
+# ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -54,17 +43,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
+# ---------- ROLE ----------
 async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_roles[query.from_user.id] = query.data
     await query.edit_message_text(f"Role set to {query.data}")
 
+# ---------- CHAT ----------
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
-    if any(word in user_text.lower() for word in BLOCKED_WORDS):
+    if any(w in user_text.lower() for w in BLOCKED_WORDS):
         await update.message.reply_text("❌ I can't respond to that.")
         return
 
@@ -84,26 +75,35 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
-        response = requests.post(
+        r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=data,
             timeout=20,
         )
-        reply = response.json()["choices"][0]["message"]["content"]
-    except Exception:
-        reply = "⚠️ AI server error. Try again."
+        reply = r.json()["choices"][0]["message"]["content"]
+    except:
+        reply = "⚠️ AI server error."
 
     await update.message.reply_text(reply)
 
-def run_bot():
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(set_role))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    application.run_polling()
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CallbackQueryHandler(set_role))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-# ================= MAIN =================
+# ---------- WEBHOOK ----------
+@flask_app.route("/", methods=["POST"])
+async def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return "ok"
+
+@flask_app.route("/", methods=["GET"])
+def home():
+    return "Bot is running!"
+
+# ---------- RUN ----------
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    run_bot()
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
