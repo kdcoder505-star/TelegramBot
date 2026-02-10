@@ -1,5 +1,7 @@
 import os
+import threading
 import requests
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -10,16 +12,26 @@ from telegram.ext import (
     filters,
 )
 
-# ========= ENV VARIABLES =========
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+# ================= ENV =================
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN is missing")
+    raise ValueError("TELEGRAM_TOKEN not set")
 if not GROQ_API_KEY:
-    raise RuntimeError("GROQ_API_KEY is missing")
+    raise ValueError("GROQ_API_KEY not set")
 
-# ========= AI ROLES =========
+# ================= FLASK =================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+# ================= BOT =================
 ROLES = {
     "professional": "You are a professional AI assistant.",
     "comedy": "You are a funny AI assistant.",
@@ -29,7 +41,6 @@ ROLES = {
 BLOCKED_WORDS = ["sex", "porn", "xxx", "adult", "nude", "fuck"]
 user_roles = {}
 
-# ========= START =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -43,20 +54,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-# ========= SET ROLE =========
 async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_roles[query.from_user.id] = query.data
-    await query.edit_message_text(f"✅ Role set to {query.data}")
+    await query.edit_message_text(f"Role set to {query.data}")
 
-# ========= CHAT =========
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
-    if any(w in user_text.lower() for w in BLOCKED_WORDS):
-        await update.message.reply_text("❌ I can’t reply to that.")
+    if any(word in user_text.lower() for word in BLOCKED_WORDS):
+        await update.message.reply_text("❌ I can't respond to that.")
         return
 
     role = user_roles.get(user_id, "professional")
@@ -66,7 +75,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Content-Type": "application/json",
     }
 
-    payload = {
+    data = {
         "model": "llama3-70b-8192",
         "messages": [
             {"role": "system", "content": ROLES[role]},
@@ -75,27 +84,26 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
-        res = requests.post(
+        response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
-            json=payload,
-            timeout=30,
+            json=data,
+            timeout=20,
         )
-        reply = res.json()["choices"][0]["message"]["content"]
-    except:
+        reply = response.json()["choices"][0]["message"]["content"]
+    except Exception:
         reply = "⚠️ AI server error. Try again."
 
     await update.message.reply_text(reply)
 
-# ========= MAIN =========
-def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(set_role))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Bot running...")
-    app.run_polling()
+def run_bot():
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(set_role))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    application.run_polling()
 
+# ================= MAIN =================
 if __name__ == "__main__":
-    main()
-
+    threading.Thread(target=run_flask).start()
+    run_bot()
